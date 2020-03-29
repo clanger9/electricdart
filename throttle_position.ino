@@ -54,21 +54,17 @@ int sensor1_upper_bound = sensor1_max + (sensor1_max * sensor_tolerance_percent 
 int sensor2_lower_bound = sensor2_idle - (sensor2_idle * sensor_tolerance_percent / 100);
 int sensor2_upper_bound = sensor2_max + (sensor2_max * sensor_tolerance_percent / 100);
 
-// output variables
+// output setup
 int motor_speed = 0;            // motor speed sent to motor controller
-int lcd_chars = 0;              // number of characters to display on LCD
-char lcd_text[] = "                ";
 int error = 0;
 String debug_text;
-
-// LCD library
 #include <Wire.h> 
 #include <LiquidCrystal_I2C.h>
 LiquidCrystal_I2C lcd(0x27,20,4);  // set the LCD address to 0x27 for a 16 chars and 2 line display
 
 void setup() {
   
-  // initialize serial communication with computer:
+  // initialize serial communication for debug text
   Serial.begin(9600);
   
   // initialize the average arrays
@@ -94,30 +90,31 @@ void setup() {
 
 void loop() {
 
-  error = 0; // clear any errors
+  // clear any errors
+  error = 0; 
 
-  sensor1_input = analogRead(sensor1_pin);  // read raw analogue values
+  // read raw analogue values
+  sensor1_input = analogRead(sensor1_pin);  
   sensor2_input = analogRead(sensor2_pin);
 
   // average the sensor readings
-  total1 = total1 - readings1[read_index];  // remove the last reading from array
+  // first remove the last reading from array
+  total1 = total1 - readings1[read_index];  
   total2 = total2 - readings2[read_index];
-
-  readings1[read_index] = sensor1_input;    // add new reading to array
+  // add new reading to array
+  readings1[read_index] = sensor1_input;    
   readings2[read_index] = sensor2_input;
-  
-  total1 = total1 + readings1[read_index];  // add the reading to the total:
+  // add the reading to the total
+  total1 = total1 + readings1[read_index];  
   total2 = total2 + readings2[read_index];
-  
-  read_index++; // advance to the next position in the array:
-
+  // advance to the next position in the array
+  read_index++; 
   // if we're at the end of the array...
   if (read_index >= num_readings) {
-    // ...wrap around to the beginning:
+    // ...wrap around to the beginning
     read_index = 0;
   }
-
-  // calculate the averages:
+  // calculate the averages
   sensor1_average = total1 / num_readings;
   sensor2_average = total2 / num_readings;
 
@@ -152,9 +149,10 @@ void loop() {
   // scale sensor 2 to throttle setting
   sensor2 = map (sensor2_average, sensor2_idle, sensor2_max, throttle_min, throttle_max);
   sensor2 = constrain (sensor2, throttle_min, throttle_max);
-  
-  switch (error) {
-    case 0: // both sensors within bounds
+
+  // no sensor errors so far?
+  if (error == 0) {
+      // check for mismatch
       mismatch_percent = abs(sensor2 - sensor1) * (throttle_max - throttle_min) / 100; 
       // sensor mismatch exceeds tolerance
       if (mismatch_percent > sensor_tolerance_percent) {
@@ -165,16 +163,9 @@ void loop() {
         // both sensors within bounds and within tolerance
         throttle_position = ((sensor1 + sensor2) / 2); // take the average of both sensors
       }
-      break;      
-    case 1:
-      throttle_position = 0; // sensor 1 fault 
-      break;
-    case 2:
-      throttle_position = 0; // sensor 2 fault 
-      break;
-    default:
-      throttle_position = 0; // idle in all other cases
-      break;
+    }
+    else {
+        throttle_position = 0; // sensor fault 
     }
 
   // set the motor speed
@@ -206,25 +197,33 @@ void loop() {
   delay(loop_delay);        // delay in between reads for stability
 }
 
+// spin the motor
+// this approach is dangerous for real-world applications: if the Arduino crashes, the output will stick at the last value...
+// some sort of PWM or encoded output might be better
 void SetMotor(int ThrottlePosition) {
   // control motor
   motor_speed = map(throttle_position, throttle_min, throttle_max, 0, 255);
   analogWrite(motor_pin, motor_speed); 
 }
 
+// provide some output via LED & LCD display
 void SetDisplay(int throttle_position, int error) {
   // set display
   if (error > 0) {
-    digitalWrite(error_pin, HIGH); 
-    char lcd_text[] = "Error ";
-    char error_text[1];
-    itoa(error, error_text, 10); 
-    strcat(lcd_text, error_text);
+    digitalWrite(error_pin, HIGH);     
+    String error_text = "Error ";
+    error_text = error_text + error;
+    byte i = error_text.length();
+    for (i; i < 16; i++) {
+      error_text = error_text + ' '; 
+    }
     lcd.setCursor(1,1);
-    lcd.print(lcd_text);
+    lcd.print(error_text);
   }
   else {
     digitalWrite(error_pin, LOW);
+    char lcd_text[15] = "                ";
+    int lcd_chars = 0;          
     lcd_chars = map(throttle_position, throttle_min, throttle_max, 1, 16);
     for (byte i = 0; i < 15; i++) {
       if (i < lcd_chars) { 
