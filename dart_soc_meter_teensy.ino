@@ -39,12 +39,9 @@ int light = 1000; // adjust for your photocell
 
 // CAN bus setup
 #include <FlexCAN.h>
-const long can_id = 0x521; // set this to match your CAN bus ID
+const long can_id = 0x350; // set this to match your CAN bus ID
 const long can_speed = 500000; // set this to match your CAN bus speed
-
-// pot input - for testing without CAN bus
-int pin_pot = 31;
-int pot_reading;
+const long can_timeout = 10; // seconds to wait without data before showing error
 
 // internal variables
 int refresh_interval = 1000 / (digits * refresh_hz); // milliseconds
@@ -53,6 +50,7 @@ unsigned long currentMillis;
 unsigned long currentMicros;
 unsigned long next_refresh = 0;
 unsigned long next_blank = 0;
+unsigned long next_timeout = 0;
 int current_digit = 0;
 int reading = -1;
 int photocell_reading;
@@ -142,8 +140,8 @@ void CANlistenerClass::printFrame(CAN_message_t &frame, int mailbox)
    if (frame.id == can_id) {
       // Matching CAN bus frame arrived!
       // now piece it together e.g.
-      // long reading = (frame.buf[2] << 24) | (frame.buf[3] << 16) | (frame.buf[4] << 8) | (frame.buf[5]);
-      // set reading variable here
+      reading = (frame.buf[6] << 8) | (frame.buf[7]);
+      next_timeout = currentMillis + (can_timeout * 1000);
     }
 }
 
@@ -193,8 +191,8 @@ void loop() {
   // add extra code here
 
   // pot input for testing without CAN bus
-  reading = analogRead(pin_pot); 
-  reading = map(reading, 10, 1023, 0, 1000);
+  //reading = analogRead(pin_pot); 
+  //reading = map(reading, 10, 1023, 0, 1000);
   //
   //
 
@@ -207,6 +205,11 @@ void loop() {
   photocell_reading = constrain(photocell_reading, dark, light);
   led_brightness = map(photocell_reading, dark, light, 1, 10);
   on_time = led_brightness * refresh_interval * 100; // microseconds
+
+  // timeout
+  if (currentMillis > next_timeout) {
+    reading = -1;
+  }
 
   // is it time to refresh display?
   if (currentMillis > next_refresh) {
