@@ -3,6 +3,7 @@
 //
 // Usage: send integer number over CAN bus to configured address
 // Values between 0 and 1000 will be displayed as "  0.0" to "100 "
+// The display flashes "  0.0" when it reaches zero
 // Anything else (or no data) will be displayed as "----"
 //
 // electric_dart 2021
@@ -16,6 +17,7 @@ const int pinDecimalPoint = 20; // pin for decimal point
 const int pinDigit[ledDigits] = {12, 11, 10, 9}; // common digit pins, left to right
 const boolean ledIsCommonAnode = 1; // 1=common anode 0=common cathode
 const int ledRefreshHz = 50; // minimum 40Hz to avoid flicker
+const int ledFlashHz = 2; // for flashing display
 
 // define display characters
 const int zero[ledSegments] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, LOW};
@@ -35,8 +37,8 @@ const int* character[12] = {zero, one, two, three, four, five, six, seven, eight
 
 // photocell parameters
 int pinPhotocell = 32; // photocell pin
-int photocellDark = 500; // adjust for your photocell
-int photocellLight = 1000; // adjust for your photocell
+int photocellDark = 500; // adjust dark level for your photocell
+int photocellLight = 1000; // adjust light level for your photocell
 
 // CAN bus setup
 #include <FlexCAN.h>
@@ -52,10 +54,12 @@ unsigned long nowMicroseconds;
 unsigned long nextRefreshMilliseconds = 0;
 unsigned long nextBlankMicroseconds = 0;
 unsigned long nextTimeoutMilliseconds = 0;
+unsigned long nextFlashMilliseconds = 0;
+boolean ledFlashState = 1;
 int digitSelect = 0;
 int reading = -1;
 int photocellReading;
-int ledBrightness; // 1 to 10
+int ledBrightness; // score 1 to 10
 
 void clearDisplay()
 {
@@ -103,7 +107,7 @@ void writeDisplay(int digit, int value) // customise this section according to w
         break;
     }
   }
-  else if (value >= 0 and value < 100) { // display "  9.9" to "  0.0" for input values from 99 to 0
+  else if (value >= 1 and value < 100) { // display "  9.9" to "  0.1" for input values from 99 to 1
     switch (digit) {
       case 2:
         writeDisplayDigit(2, value / 10, 1);
@@ -111,6 +115,32 @@ void writeDisplay(int digit, int value) // customise this section according to w
       case 3:
         writeDisplayDigit(3, value % 10, 0);
         break;
+    }
+  }
+  else if (value == 0) { // display flashing "  0.0" for input value 0
+    if (nowMilliseconds > nextFlashMilliseconds) {
+      nextFlashMilliseconds = nowMilliseconds + ( 1000 / ledFlashHz );
+      ledFlashState = ledFlashState ^ 1;
+    }
+    if (ledFlashState == 1) { 
+      switch (digit) {
+        case 2:
+          writeDisplayDigit(2, 0, 1);
+          break;
+        case 3:
+          writeDisplayDigit(3, 0, 0);
+          break;
+      }
+    }
+    else {
+      switch (digit) {
+        case 2:
+          writeDisplayDigit(2, 10, 1);
+          break;
+        case 3:
+          writeDisplayDigit(3, 10, 0);
+          break;
+      }
     }
   }
   else { // display "----" for anything else
@@ -209,7 +239,7 @@ void loop() {
 
   // timeout if no data received
   if (nowMilliseconds > nextTimeoutMilliseconds) {
-    reading = -1;
+    reading = -1; // display "----"
   }
 
   // is it time to refresh display?
