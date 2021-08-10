@@ -4,9 +4,12 @@
 // Includes automatic LED brightness control
 //
 // Usage: send integer number over CAN bus to configured address
-// Values between 0 and 1000 will be displayed as "  0.0" to "100 "
+// SoC values between 0 and 1000 will be displayed as "  0.0" to "100 "
 // The display flashes "  0.0" when it reaches zero
 // Anything else (or no data) will be displayed as "----"
+// Voltage values between 1 and 999 will be displayed as "  1V" to "999V "
+// Anything else (or no data) will be displayed as "---V"
+// Touch selection to toggle display between SoC and  voltage
 //
 // electric_dart 2021
 
@@ -34,16 +37,24 @@ const int eight[ledSegments] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
 const int nine[ledSegments] = {HIGH, HIGH, HIGH, LOW, LOW, HIGH, HIGH};
 const int blank[ledSegments] = {LOW, LOW, LOW, LOW, LOW, LOW, LOW};
 const int dash[ledSegments] = {LOW, LOW, LOW, LOW, LOW, LOW, HIGH};
+const int volt[ledSegments] = {LOW, LOW, HIGH, HIGH, HIGH, LOW, LOW};
 // add additional characters here if required
-const int* character[12] = {zero, one, two, three, four, five, six, seven, eight, nine, blank, dash};
+const int* character[13] = {zero, one, two, three, four, five, six, seven, eight, nine, blank, dash, volt};
 
 // photocell parameters
 int pinPhotocell = 14; // photocell pin
 int photocellDark = 500; // adjust dark level for your photocell
 int photocellLight = 1000; // adjust light level for your photocell
 
+// touch parameters
+int pinOnboardLED = 13;
+int pinTouch = 15;
+int touchCurrentState;
+int touchLastState;
+
 // CAN bus setup
-const long canID = 0x350; // set this to match your CAN bus ID
+const long canIDsoc = 0x350; // set this to match your SoC CAN bus ID
+const long canIDvoltage = 0x522; // set this to match your voltage CAN bus ID
 const long canSpeed = 500000; // set this to match your CAN bus speed
 const long canTimeout = 10; // seconds to wait without data before showing error
 #include <FlexCAN_T4.h>
@@ -60,9 +71,11 @@ unsigned long nextTimeoutMilliseconds = 0;
 unsigned long nextFlashMilliseconds = 0;
 boolean ledFlashState = 1;
 int digitSelect = 0;
-int reading = -1;
+int readingSoC = -1;
+int readingVoltage = -1;
 int photocellReading;
 int ledBrightness; // score 1 to 10
+int displayMode = 0; // 0=SoC, 1=Voltage
 
 void clearDisplay()
 {
@@ -85,7 +98,7 @@ void writeDisplayDigit(int digit, int value, boolean decimal)
   digitalWrite(pinDigit[digit], LOW ^ ledIsCommonAnode);
 }
 
-void writeDisplay(int digit, int value) // customise this section according to what you want to display
+void writeDisplaySoC(int digit, int value) // customise this section according to what you want to display
 {
   if (value == 1000) { // display "100 " if the input value is 1000
     switch (digit) {
@@ -151,6 +164,66 @@ void writeDisplay(int digit, int value) // customise this section according to w
   }
 }
 
+void writeDisplayVoltage(int digit, int value) // customise this section according to what you want to display
+{
+  if (value >= 100 and value < 1000) { // display "100V" to "999V" for input values 100 to 999
+    switch (digit) {
+      case 0:
+        writeDisplayDigit(0, (value / 100) % 10, 0);
+        break;
+      case 1:
+        writeDisplayDigit(1, (value / 10) % 10, 0);
+        break;
+      case 2:
+        writeDisplayDigit(2, value  % 10 , 0);
+        break;
+      case 3:
+        writeDisplayDigit(3, 12, 0);
+        break;        
+    }
+  }
+  else if (value >= 10 and value < 100) { // display " 10V" to " 99V " for input values from 10 to 99
+    switch (digit) {
+      case 1:
+        writeDisplayDigit(1, value / 10, 0);
+        break;
+      case 2:
+        writeDisplayDigit(2, value % 10, 0);
+        break;
+      case 3:
+        writeDisplayDigit(3, 12, 0);
+        break;        
+    }
+  }
+  else if (value >= 1 and value < 10) { // display "  1V" to "  9V " for input values from 1 to 9
+    switch (digit) {
+      case 2:
+        writeDisplayDigit(2, value % 10, 0);
+        break;
+      case 3:
+        writeDisplayDigit(3, 12, 0);
+        break;        
+    }
+  }
+  else { // display "---V" for anything else
+    switch (digit) {
+      case 0:
+        writeDisplayDigit(0, 11, 0);
+        break;
+      case 1:
+        writeDisplayDigit(1, 11, 0);
+        break;
+      case 2:
+        writeDisplayDigit(2, 11, 0);
+        break;
+      case 3:
+        writeDisplayDigit(3, 12, 0);
+        break;   
+    }     
+  }
+}
+
+
 void setup() {
   Serial.begin(9600); //initialise serial communications at 9600 bps
 
@@ -174,7 +247,6 @@ void setup() {
 
   // decimal point pin
   pinMode(pinDecimalPoint, OUTPUT);
-  digitalWrite(pinDecimalPoint, LOW ^ ledIsCommonAnode);
 
   // digit pins
   for (int i = 0; i < ledDigits; ++i)
@@ -182,6 +254,12 @@ void setup() {
     pinMode(pinDigit[i], OUTPUT);
   }
   clearDisplay();
+
+  pinMode(pinOnboardLED, OUTPUT);
+  pinMode(pinPhotocell, INPUT);
+  pinMode(pinTouch, INPUT);
+  touchCurrentState = digitalRead(pinTouch);
+  
 }
 
 void canDataReceived(const CAN_message_t &msg) {
@@ -195,13 +273,24 @@ void canDataReceived(const CAN_message_t &msg) {
 //  for ( uint8_t i = 0; i < msg.len; i++ ) {
 //    Serial.print(msg.buf[i], HEX); Serial.print(" ");
 //  } Serial.println();
-  if (msg.id == canID) {
-  // Matching CAN bus frame arrived!
-  // now piece it together e.g.
-    reading = (msg.buf[6] << 8) | (msg.buf[7]);
-    nextTimeoutMilliseconds = nowMilliseconds + (canTimeout * 1000); // set next timeout
-  }
 
+  switch (displayMode) { // according to display mode
+    case 1:
+      if (msg.id == canIDvoltage) {
+      // Matching voltage CAN bus frame arrived!
+        //readingVoltage = (msg.buf[2] << 24) | (msg.buf[3] << 16) | (msg.buf[4] << 8) | (msg.buf[5]);   // now piece it together
+        readingVoltage = (msg.buf[6] << 8) | (msg.buf[7]);   // now piece it together
+        nextTimeoutMilliseconds = nowMilliseconds + (canTimeout * 1000); // set next timeout
+      }
+      break;  
+    default:
+      if (msg.id == canIDsoc) {
+      // Matching SoC CAN bus frame arrived!
+        readingSoC = (msg.buf[6] << 8) | (msg.buf[7]);   // now piece it together
+        nextTimeoutMilliseconds = nowMilliseconds + (canTimeout * 1000); // set next timeout
+      }
+      break;
+  }
 }
 
 void loop() {
@@ -211,6 +300,15 @@ void loop() {
   // pot input for testing without CAN bus
   //reading = analogRead(pin_pot);
   //reading = map(reading, 10, 1023, 0, 1000);
+
+  touchLastState = touchCurrentState;
+  touchCurrentState = digitalRead(pinTouch);
+  if(touchLastState == LOW && touchCurrentState == HIGH) {
+    // toggle display
+    displayMode = !displayMode;
+    // control LED arccoding to the toggled state
+    digitalWrite(pinOnboardLED, displayMode); 
+  }
   //
   //
 
@@ -228,14 +326,23 @@ void loop() {
 
   // timeout if no data received
   if (nowMilliseconds > nextTimeoutMilliseconds) {
-    reading = -1; // display "----"
+    readingSoC = -1; // display "----"
+    readingVoltage = -1; // display "----"
   }
 
   // is it time to refresh display?
   if (nowMilliseconds > nextRefreshMilliseconds) {
     nextRefreshMilliseconds = nowMilliseconds + ledRefreshMilliseconds; // set the time in milliseconds for the next refresh
     nextBlankMicroseconds = nowMicroseconds + ledOnMicroseconds; // set the time in microseconds for LEDs to remain on (for dimming)
-    writeDisplay(digitSelect, reading); // multiplexed display, so enable one digit at at time
+    // multiplexed display, so enable one digit at at time
+    switch (displayMode) { // according to display mode
+      case 1:
+        writeDisplayVoltage(digitSelect, readingVoltage);       
+        break;  
+      default:
+        writeDisplaySoC(digitSelect, readingSoC); 
+        break;
+    }
     ++digitSelect; // we'll do the next digit on the next pass
     if (digitSelect > ledDigits - 1 ) { // all digits done? 
       digitSelect = 0;  // wrap around to first digit again.
